@@ -34,7 +34,7 @@ class _MyHomePageState extends State<MyHomePage> {
   static final List<Widget> _widgetOptions = <Widget>[
     const HomePage(),
     MapScreen(),
-    HistoryPage(),
+    HistoryPage(viewedStations: [],),
     ProfilePage()
   ];
 
