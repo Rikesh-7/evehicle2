@@ -1,9 +1,32 @@
-import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:evehicle2/history_page.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
+import 'package:trust_location/trust_location.dart';
+import 'package:location_permissions/location_permissions.dart';
+
+class ChargingStation {
+  final String name;
+  final String address;
+  final double latitude;
+  final double longitude;
+
+  ChargingStation({
+    required this.name,
+    required this.address,
+    required this.latitude,
+    required this.longitude,
+  });
+
+  factory ChargingStation.fromJson(Map<String, dynamic> json) {
+    return ChargingStation(
+      name: json['name'] as String,
+      address: json['address'] as String,
+      latitude: json['latitude'] as double,
+      longitude: json['longitude'] as double,
+    );
+  }
+}
 
 class MapScreen extends StatefulWidget {
   @override
@@ -11,79 +34,72 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
-  Completer<GoogleMapController> _controller = Completer();
-  Set<Marker> _markers = {};
-  List<String> _viewedStations = [];
+  String _locationMessage = 'Getting location...';
+  List<ChargingStation> _chargingStations = const [];
+  double _latitude = 0.0;
+  double _longitude = 0.0;
 
-  static const _initialCameraPosition = CameraPosition(
-    target: LatLng(40.730610, -73.935242),
-    zoom: 14,
-  );
-
-  Future<void> _onMapCreated(GoogleMapController controller) async {
-    _controller.complete(controller);
-
-    final chargingStations = await _getNearbyChargingStations();
-    setState(() {
-      _markers.clear();
-      _markers.addAll(chargingStations);
-    });
+  @override
+  void initState() {
+    super.initState();
+    _checkLocationPermission();
   }
 
-  Future<Set<Marker>> _getNearbyChargingStations() async {
-    // Example API call to get nearby charging stations
-    final apiKey = 'AIzaSyCcMymiePQKAypmGYnFUsxJpcALRCrSY3k';
-    final response = await http.get(Uri.parse(
-        'https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=40.730610,-73.935242&radius=1000&type=electric_vehicle_charging_station&key=$apiKey'));
-
-    if (response.statusCode == 200) {
-      final data = json.decode(response.body);
-      if (data['status'] == 'OK') {
-        final List<Marker> markers = [];
-        for (final place in data['results']) {
-          final marker = Marker(
-            markerId: MarkerId(place['place_id']),
-            position: LatLng(
-              place['geometry']['location']['lat'],
-              place['geometry']['location']['lng'],
-            ),
-            infoWindow: InfoWindow(
-              title: place['name'],
-              snippet: 'Available: ${place['business_status'] == 'OPERATIONAL'}',
-            ),
-            onTap: () {
-              // Handle marker tap, e.g., show details in a dialog
-              _addToViewedStations(place['name']);
-              showDialog(
-                context: context,
-                builder: (context) => AlertDialog(
-                  title: Text(place['name']),
-                  content: Text('Available: ${place['business_status'] == 'OPERATIONAL'}'),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      child: Text('Close'),
-                    ),
-                  ],
-                ),
-              );
-            },
-          );
-          markers.add(marker);
-        }
-        return markers.toSet();
-      } else {
-        throw Exception('Failed to load charging stations');
-      }
+  Future<void> _checkLocationPermission() async {
+    final status = await LocationPermissions().checkPermissionStatus();
+    if (status == PermissionStatus.granted) {
+      _fetchLocation();
     } else {
-      throw Exception('Failed to fetch data from the API');
+      _requestLocationPermission();
     }
   }
 
-  void _addToViewedStations(String stationName) {
-    if (!_viewedStations.contains(stationName)) {
+  Future<void> _fetchLocation() async {
+    try {
+      final location = await TrustLocation.getLocation();
       setState(() {
-        _viewedStations.add(stationName);
+        _latitude = location.latitude;
+        _longitude = location.longitude;
+        _locationMessage = 'Location fetched successfully';
+      });
+    } on TrustLocationException catch (e) {
+      setState(() {
+        _locationMessage = 'Error fetching location: ${e.message}';
+      });
+    }
+  }
+
+  Future<void> _requestLocationPermission() async {
+    final status = await LocationPermissions().requestPermissions();
+    if (status == PermissionStatus.granted) {
+      _fetchLocation();
+    } else {
+      _checkLocationPermission();
+    }
+  }
+
+  Future<void> _fetchChargingStations() async {
+    try {
+      final response = await http.get(Uri.parse('https://api.example.com/charging-stations'));
+      if (response.statusCode == 200) {
+        final jsonBody = json.decode(response.body);
+        final List<dynamic> jsonStations = jsonBody['charging_stations'];
+        final List<ChargingStation> stations = jsonStations.map((json) => ChargingStation.fromJson(json)).toList();
+        setState(() {
+          _chargingStations = stations;
+        });
+      } else {
+        setState(() {
+          _locationMessage = 'Error fetching charging stations';
+        });
+      }
+    } on SocketException {
+      setState(() {
+        _locationMessage = 'No internet connection';
+      });
+    } on HttpException {
+      setState(() {
+        _locationMessage = 'Error fetching charging stations';
       });
     }
   }
@@ -92,21 +108,24 @@ class _MapScreenState extends State<MapScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Nearby Charging Stations'),
-        centerTitle: true,
+        title: Text('Charging Stations'),
       ),
-      body: GoogleMap(
-        mapType: MapType.normal,
-        initialCameraPosition: _initialCameraPosition,
-        onMapCreated: _onMapCreated,
-        markers: _markers,
-      ),
+      body: _chargingStations.isEmpty
+          ? Center(
+              child: CircularProgressIndicator(),
+            )
+          : ListView.builder(
+              itemCount: _chargingStations.length,
+              itemBuilder: (context, index) {
+                final chargingStation = _chargingStations[index];
+                return ListTile(
+                  title: Text(chargingStation.name),
+                  subtitle: Text(chargingStation.address),
+                  leading: Icon(Icons.electric_car),
+                  trailing: Text('${chargingStation.latitude}, ${chargingStation.longitude}'),
+                );
+              },
+            ),
     );
   }
-}
-
-void main() {
-  runApp(MaterialApp(
-    home: MapScreen(),
-  ));
 }
